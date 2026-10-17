@@ -65,7 +65,7 @@
   var BYTE_PER_DB = 255 / DB_RANGE;
 
   var W = 0, H = 0, cx = 0, cy = 0, baseR = 100, N = 96;
-  var binLo = null, binHi = null, tilt = null, levels = null, nf = null;
+  var binLo = null, binHi = null, tilt = null, levels = null, nf = null, jitter = null;
   var audioCtx = null, analyser = null, freqData = null, stream = null, mute = null;
   var running = false, level = 0, gate = 0, hintTimer = null;
 
@@ -78,9 +78,11 @@
       for (var i = 0; i < keep; i++) levels[i] = old[i];
     }
     nf = new Float32Array(n);
+    jitter = new Float32Array(n);
     binLo = new Int32Array(n);
     binHi = new Int32Array(n);
     tilt = new Float32Array(n);
+    for (var j = 0; j < n; j++) jitter[j] = Math.random() * TAU;
   }
 
   function buildMap() {
@@ -126,7 +128,7 @@
     cy = H / 2;
     baseR = Math.min(W, H) * 0.23;
 
-    var next = Math.max(48, Math.min(200, Math.round((TAU * baseR) / 7)));
+    var next = Math.max(72, Math.min(220, Math.round((TAU * baseR) / 5)));
     alloc(next);
     buildMap();
 
@@ -200,9 +202,9 @@
       var src = audioCtx.createMediaStreamSource(stream);
       analyser = audioCtx.createAnalyser();
       analyser.fftSize = 2048;
-      analyser.smoothingTimeConstant = 0.5;
-      analyser.minDecibels = -100;
-      analyser.maxDecibels = -10;
+      analyser.smoothingTimeConstant = 0.6;
+      analyser.minDecibels = -95;
+      analyser.maxDecibels = -15;
       mute = audioCtx.createGain();
       mute.gain.value = 0;
       src.connect(analyser);
@@ -239,95 +241,94 @@
       var n0 = raw / 255;
 
       var f = nf[i];
-      if (n0 < f) f += (n0 - f) * 0.22;
-      else f += (n0 - f) * 0.0012;
-      if (f < 0.025) f = 0.025;
+      if (n0 < f) f += (n0 - f) * 0.18;
+      else f += (n0 - f) * 0.0015;
+      if (f < 0.05) f = 0.05;
       if (f > 0.85) f = 0.85;
       nf[i] = f;
 
       var n = (n0 - f) / (1 - f);
       if (n <= 0) n = 0;
       else if (n > 1) n = 1;
-      else n = Math.pow(n, 0.7);
-
-      n *= 1.6;
-      if (n > 1) n = 1;
+      else n = Math.pow(n, 1.05);
 
       if (n > peak) peak = n;
       sum += n;
 
       var c = levels[i];
-      levels[i] = n > c ? c + (n - c) * 0.6 : c + (n - c) * 0.18;
+      levels[i] = n > c ? c + (n - c) * 0.45 : c + (n - c) * 0.14;
     }
 
-    var g = peak > 0.04 ? 1 : 0;
-    gate += (g - gate) * (g > gate ? 0.55 : 0.08);
+    var g = peak > 0.1 ? 1 : 0;
+    gate += (g - gate) * (g > gate ? 0.4 : 0.09);
 
     var tgt = sum / N;
-    level += (tgt - level) * 0.28;
+    level += (tgt - level) * 0.22;
     if (level > 1) level = 1;
   }
 
   function decay() {
-    for (var i = 0; i < N; i++) levels[i] += (0 - levels[i]) * 0.1;
-    level += (0 - level) * 0.1;
-    gate += (0 - gate) * 0.12;
+    for (var i = 0; i < N; i++) levels[i] += (0 - levels[i]) * 0.12;
+    level += (0 - level) * 0.12;
+    gate += (0 - gate) * 0.15;
   }
 
-  function render() {
+  function render(t) {
     ctx.clearRect(0, 0, W, H);
 
     var R = baseR;
     var vis = level * gate;
 
-    if (vis > 0.008) {
-      var a = Math.min(0.28, vis * 0.55);
-      var grad = ctx.createRadialGradient(cx, cy, R * 0.8, cx, cy, R * 2.8);
+    if (vis > 0.01) {
+      var a = Math.min(0.08, vis * 0.18);
+      var grad = ctx.createRadialGradient(cx, cy, R * 0.9, cx, cy, R * 2.2);
       grad.addColorStop(0, 'rgba(255,255,255,' + a + ')');
       grad.addColorStop(1, 'rgba(255,255,255,0)');
       ctx.fillStyle = grad;
       ctx.beginPath();
-      ctx.arc(cx, cy, R * 2.8, 0, TAU);
+      ctx.arc(cx, cy, R * 2.2, 0, TAU);
       ctx.fill();
     }
 
-    var inner = R + 2;
-    var maxLen = baseR * 1.9;
-    var lwBase = Math.max(1.4, ((TAU * R) / N) * 0.62);
+    var inner = R + 3;
+    var minLen = baseR * 0.008;
+    var maxLen = baseR * 0.34;
+    var lwBase = Math.max(1, ((TAU * R) / N) * 0.42);
     ctx.lineCap = 'round';
 
     for (var i = 0; i < N; i++) {
-      var v = levels[i];
-      if (v < 0.008) continue;
+      var v = levels[i] * gate;
+      if (v < 0.01) continue;
 
-      var L = v * maxLen;
-      if (L < 2) L = 2;
+      var alive = 1 + Math.sin(t / 320 + jitter[i]) * 0.12 * (0.4 + v);
+      var L = (minLen + v * maxLen) * alive;
+      if (L < 1.2) L = 1.2;
 
       var ang = (i / N) * TAU - Math.PI / 2;
       var co = Math.cos(ang), si = Math.sin(ang);
-      var alpha = 0.3 + v * 0.7;
-      if (alpha > 1) alpha = 1;
+      var alpha = 0.14 + v * 0.72;
+      if (alpha > 0.92) alpha = 0.92;
 
       ctx.beginPath();
       ctx.moveTo(cx + co * inner, cy + si * inner);
       ctx.lineTo(cx + co * (inner + L), cy + si * (inner + L));
-      ctx.lineWidth = lwBase * (1 + v * 1.8);
+      ctx.lineWidth = lwBase * (1 + v * 0.7);
       ctx.strokeStyle = 'rgba(255,255,255,' + alpha + ')';
       ctx.stroke();
     }
 
     ctx.beginPath();
     ctx.arc(cx, cy, R, 0, TAU);
-    ctx.lineWidth = 1.8;
-    ctx.strokeStyle = 'rgba(255,255,255,' + (0.34 + vis * 0.6) + ')';
+    ctx.lineWidth = 1.5;
+    ctx.strokeStyle = 'rgba(255,255,255,' + (0.4 + vis * 0.4) + ')';
     ctx.stroke();
   }
 
-  function frame() {
+  function frame(t) {
     requestAnimationFrame(frame);
     if (running && analyser && freqData) update();
     else decay();
-    render();
+    render(t);
   }
 
   btn.addEventListener('click', function () {
