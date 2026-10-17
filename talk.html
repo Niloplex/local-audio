@@ -1,4 +1,4 @@
- <!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -60,23 +60,41 @@
 
   var TAU = Math.PI * 2;
   var MIN_F = 70;
-  var MAX_F = 9000;
+  var MAX_F = 7000;
+  var DB_RANGE = 80;
+  var BYTE_PER_DB = 255 / DB_RANGE;
 
   var W = 0, H = 0, cx = 0, cy = 0, baseR = 100, N = 96;
-  var binLo = new Int32Array(0);
-  var binHi = new Int32Array(0);
-  var levels = new Float32Array(0);
+  var binLo = null, binHi = null, tilt = null, levels = null, nf = null;
   var audioCtx = null, analyser = null, freqData = null, stream = null, mute = null;
-  var running = false, level = 0, hintTimer = null;
+  var running = false, level = 0, gate = 0, hintTimer = null;
+
+  function alloc(n) {
+    N = n;
+    var old = levels;
+    levels = new Float32Array(n);
+    if (old) {
+      var keep = Math.min(old.length, n);
+      for (var i = 0; i < keep; i++) levels[i] = old[i];
+    }
+    nf = new Float32Array(n);
+    binLo = new Int32Array(n);
+    binHi = new Int32Array(n);
+    tilt = new Float32Array(n);
+  }
 
   function buildMap() {
     var sr = audioCtx ? audioCtx.sampleRate : 48000;
     var bins = analyser ? analyser.frequencyBinCount : 1024;
     var fHi = Math.min(MAX_F, sr * 0.45);
     var per = sr / (2 * bins);
+    var half = Math.ceil(N / 2);
+
     for (var i = 0; i < N; i++) {
-      var f0 = MIN_F * Math.pow(fHi / MIN_F, i / N);
-      var f1 = MIN_F * Math.pow(fHi / MIN_F, (i + 1) / N);
+      var k = i < half ? i : N - 1 - i;
+      var f0 = MIN_F * Math.pow(fHi / MIN_F, k / half);
+      var f1 = MIN_F * Math.pow(fHi / MIN_F, (k + 1) / half);
+
       var b0 = Math.floor(f0 / per);
       var b1 = Math.ceil(f1 / per);
       if (b1 <= b0) b1 = b0 + 1;
@@ -84,6 +102,13 @@
       if (b1 > bins) b1 = bins;
       binLo[i] = b0;
       binHi[i] = b1;
+
+      var fc = Math.sqrt(f0 * f1);
+      var oct = Math.log(Math.max(fc, 200) / 200) / Math.LN2;
+      var db = oct * 1.7;
+      if (db < 0) db = 0;
+      else if (db > 11) db = 11;
+      tilt[i] = db * BYTE_PER_DB;
     }
   }
 
@@ -102,13 +127,7 @@
     baseR = Math.min(W, H) * 0.23;
 
     var next = Math.max(48, Math.min(200, Math.round((TAU * baseR) / 7)));
-    var old = levels;
-    levels = new Float32Array(next);
-    var keep = Math.min(old.length, next);
-    for (var i = 0; i < keep; i++) levels[i] = old[i];
-    N = next;
-    binLo = new Int32Array(N);
-    binHi = new Int32Array(N);
+    alloc(next);
     buildMap();
 
     btn.style.width = (baseR * 2) + 'px';
@@ -181,7 +200,7 @@
       var src = audioCtx.createMediaStreamSource(stream);
       analyser = audioCtx.createAnalyser();
       analyser.fftSize = 2048;
-      analyser.smoothingTimeConstant = 0.65;
+      analyser.smoothingTimeConstant = 0.55;
       analyser.minDecibels = -95;
       analyser.maxDecibels = -15;
       mute = audioCtx.createGain();
@@ -204,7 +223,9 @@
 
   function update() {
     analyser.getByteFrequencyData(freqData);
-    var sum = 0;
+
+    var sum = 0, peak = 0;
+
     for (var i = 0; i < N; i++) {
       var raw = 0;
       var b0 = binLo[i], b1 = binHi[i];
@@ -212,78 +233,98 @@
         var v = freqData[b];
         if (v > raw) raw = v;
       }
-      var n = raw / 255;
-      n = (n - 0.05) * 1.35;
+
+      raw += tilt[i];
+      if (raw > 255) raw = 255;
+      var n0 = raw / 255;
+
+      var f = nf[i];
+      if (n0 < f) f += (n0 - f) * 0.25;
+      else f += (n0 - f) * 0.0015;
+      if (f < 0.08) f = 0.08;
+      if (f > 0.9) f = 0.9;
+      nf[i] = f;
+
+      var n = (n0 - f) / (1 - f);
       if (n <= 0) n = 0;
       else if (n > 1) n = 1;
-      else n = Math.pow(n, 1.2);
+      else n = Math.pow(n, 1.15);
+
+      if (n > peak) peak = n;
       sum += n;
+
       var c = levels[i];
-      levels[i] = n > c ? c + (n - c) * 0.42 : c + (n - c) * 0.1;
+      levels[i] = n > c ? c + (n - c) * 0.55 : c + (n - c) * 0.16;
     }
-    level += (sum / N - level) * 0.22;
+
+    var g = peak > 0.12 ? 1 : 0;
+    gate += (g - gate) * (g > gate ? 0.45 : 0.10);
+
+    var tgt = sum / N;
+    level += (tgt - level) * 0.25;
     if (level > 1) level = 1;
   }
 
   function decay() {
-    for (var i = 0; i < N; i++) levels[i] += (0 - levels[i]) * 0.1;
-    level += (0 - level) * 0.1;
+    for (var i = 0; i < N; i++) levels[i] += (0 - levels[i]) * 0.12;
+    level += (0 - level) * 0.12;
+    gate += (0 - gate) * 0.15;
   }
 
-  function render(t) {
+  function render() {
     ctx.clearRect(0, 0, W, H);
 
-    var active = running;
     var R = baseR;
+    var vis = level * gate;
 
-    if (level > 0.01) {
-      var a = Math.min(0.16, level * 0.3);
-      var g = ctx.createRadialGradient(cx, cy, R * 0.9, cx, cy, R * 2.4);
-      g.addColorStop(0, 'rgba(255,255,255,' + a + ')');
-      g.addColorStop(1, 'rgba(255,255,255,0)');
-      ctx.fillStyle = g;
+    if (vis > 0.012) {
+      var a = Math.min(0.18, vis * 0.34);
+      var grad = ctx.createRadialGradient(cx, cy, R * 0.85, cx, cy, R * 2.5);
+      grad.addColorStop(0, 'rgba(255,255,255,' + a + ')');
+      grad.addColorStop(1, 'rgba(255,255,255,0)');
+      ctx.fillStyle = grad;
       ctx.beginPath();
-      ctx.arc(cx, cy, R * 2.4, 0, TAU);
+      ctx.arc(cx, cy, R * 2.5, 0, TAU);
       ctx.fill();
     }
 
     var inner = R + 2;
-    var minLen = baseR * 0.055;
-    var maxLen = baseR * 0.62;
-    var lw = Math.max(1, (TAU * R / N) * 0.55);
+    var maxLen = baseR * 0.8;
+    var lwBase = Math.max(1, ((TAU * R) / N) * 0.5);
     ctx.lineCap = 'round';
 
     for (var i = 0; i < N; i++) {
-      var lvl = levels[i];
-      var wobble = active
-        ? Math.sin(t / 260 + i * 1.7) * 0.03
-        : Math.sin(t / 900 + i * 0.9) * 0.012;
-      var L = minLen + lvl * maxLen + minLen * wobble;
-      if (L < 1) L = 1;
+      var v = levels[i] * gate;
+      if (v < 0.015) continue;
+
+      var L = v * maxLen;
+      if (L < 1.5) L = 1.5;
 
       var ang = (i / N) * TAU - Math.PI / 2;
       var co = Math.cos(ang), si = Math.sin(ang);
+      var alpha = 0.18 + v * 0.78;
+      if (alpha > 1) alpha = 1;
 
       ctx.beginPath();
       ctx.moveTo(cx + co * inner, cy + si * inner);
       ctx.lineTo(cx + co * (inner + L), cy + si * (inner + L));
-      ctx.lineWidth = lw * (1 + lvl * 0.9);
-      ctx.strokeStyle = 'rgba(255,255,255,' + (0.22 + lvl * 0.7) + ')';
+      ctx.lineWidth = lwBase * (1 + v * 1.1);
+      ctx.strokeStyle = 'rgba(255,255,255,' + alpha + ')';
       ctx.stroke();
     }
 
     ctx.beginPath();
     ctx.arc(cx, cy, R, 0, TAU);
-    ctx.lineWidth = active ? 1.8 : 1.4;
-    ctx.strokeStyle = 'rgba(255,255,255,' + (active ? 0.75 + level * 0.25 : 0.5) + ')';
+    ctx.lineWidth = 1.6;
+    ctx.strokeStyle = 'rgba(255,255,255,' + (0.34 + vis * 0.5) + ')';
     ctx.stroke();
   }
 
-  function frame(t) {
+  function frame() {
     requestAnimationFrame(frame);
     if (running && analyser && freqData) update();
     else decay();
-    render(t);
+    render();
   }
 
   btn.addEventListener('click', function () {
