@@ -1,0 +1,302 @@
+ <!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<title>Talk</title>
+<style>
+  *{margin:0;padding:0;box-sizing:border-box}
+  html,body{height:100%;overflow:hidden;background:#000}
+  body{
+    font-family:ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    -webkit-tap-highlight-color:transparent;
+    -webkit-user-select:none;
+    user-select:none;
+  }
+  #c{position:fixed;inset:0;display:block;width:100%;height:100%}
+  #btn{
+    position:fixed;
+    left:50%;top:50%;
+    transform:translate(-50%,-50%);
+    display:flex;align-items:center;justify-content:center;
+    border:0;padding:0;background:transparent;
+    border-radius:50%;
+    font-family:inherit;
+    font-weight:400;
+    font-size:clamp(20px,4.2vmin,34px);
+    letter-spacing:.05em;
+    color:rgba(255,255,255,.88);
+    cursor:pointer;
+    touch-action:manipulation;
+    transition:color .35s ease,transform .12s ease;
+  }
+  #btn:active{transform:translate(-50%,-50%) scale(.97)}
+  #btn:focus{outline:none}
+  body.live #btn{color:#fff}
+  #hint{
+    position:fixed;
+    transform:translate(-50%,-50%);
+    font-size:12px;
+    letter-spacing:.16em;
+    color:rgba(255,255,255,.55);
+    opacity:0;
+    pointer-events:none;
+    white-space:nowrap;
+    transition:opacity .3s ease;
+  }
+  #hint.show{opacity:1}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<button id="btn" type="button">Talk</button>
+<div id="hint"></div>
+<script>
+(function () {
+  var canvas = document.getElementById('c');
+  var ctx = canvas.getContext('2d');
+  var btn = document.getElementById('btn');
+  var hint = document.getElementById('hint');
+
+  var TAU = Math.PI * 2;
+  var MIN_F = 70;
+  var MAX_F = 9000;
+
+  var W = 0, H = 0, cx = 0, cy = 0, baseR = 100, N = 96;
+  var binLo = new Int32Array(0);
+  var binHi = new Int32Array(0);
+  var levels = new Float32Array(0);
+  var audioCtx = null, analyser = null, freqData = null, stream = null, mute = null;
+  var running = false, level = 0, hintTimer = null;
+
+  function buildMap() {
+    var sr = audioCtx ? audioCtx.sampleRate : 48000;
+    var bins = analyser ? analyser.frequencyBinCount : 1024;
+    var fHi = Math.min(MAX_F, sr * 0.45);
+    var per = sr / (2 * bins);
+    for (var i = 0; i < N; i++) {
+      var f0 = MIN_F * Math.pow(fHi / MIN_F, i / N);
+      var f1 = MIN_F * Math.pow(fHi / MIN_F, (i + 1) / N);
+      var b0 = Math.floor(f0 / per);
+      var b1 = Math.ceil(f1 / per);
+      if (b1 <= b0) b1 = b0 + 1;
+      if (b0 > bins - 1) b0 = bins - 1;
+      if (b1 > bins) b1 = bins;
+      binLo[i] = b0;
+      binHi[i] = b1;
+    }
+  }
+
+  function resize() {
+    var dpr = Math.min(window.devicePixelRatio || 1, 2);
+    W = window.innerWidth;
+    H = window.innerHeight;
+    canvas.width = Math.round(W * dpr);
+    canvas.height = Math.round(H * dpr);
+    canvas.style.width = W + 'px';
+    canvas.style.height = H + 'px';
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+    cx = W / 2;
+    cy = H / 2;
+    baseR = Math.min(W, H) * 0.23;
+
+    var next = Math.max(48, Math.min(200, Math.round((TAU * baseR) / 7)));
+    var old = levels;
+    levels = new Float32Array(next);
+    var keep = Math.min(old.length, next);
+    for (var i = 0; i < keep; i++) levels[i] = old[i];
+    N = next;
+    binLo = new Int32Array(N);
+    binHi = new Int32Array(N);
+    buildMap();
+
+    btn.style.width = (baseR * 2) + 'px';
+    btn.style.height = (baseR * 2) + 'px';
+    hint.style.left = cx + 'px';
+    hint.style.top = (cy + baseR * 1.55) + 'px';
+  }
+
+  function flash(msg) {
+    hint.textContent = msg;
+    hint.classList.add('show');
+    clearTimeout(hintTimer);
+    hintTimer = setTimeout(function () { hint.classList.remove('show'); }, 2600);
+  }
+
+  function setLabel(text) {
+    if (btn.textContent !== text) btn.textContent = text;
+  }
+
+  function stop() {
+    running = false;
+    document.body.classList.remove('live');
+    setLabel('Talk');
+    if (stream) {
+      var tracks = stream.getTracks();
+      for (var i = 0; i < tracks.length; i++) tracks[i].stop();
+      stream = null;
+    }
+    if (mute) { try { mute.disconnect(); } catch (e) {} mute = null; }
+    if (analyser) { try { analyser.disconnect(); } catch (e) {} analyser = null; }
+    freqData = null;
+    if (audioCtx) { try { audioCtx.close(); } catch (e) {} audioCtx = null; }
+  }
+
+  async function start() {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      flash('Microphone unavailable');
+      return;
+    }
+
+    var AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) { flash('Audio unavailable'); return; }
+
+    try {
+      if (!audioCtx) audioCtx = new AC();
+      if (audioCtx.state === 'suspended') await audioCtx.resume();
+    } catch (e) {
+      flash('Audio unavailable');
+      return;
+    }
+
+    var s = null;
+    try {
+      s = await navigator.mediaDevices.getUserMedia({
+        audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: true }
+      });
+    } catch (err) {
+      if (err && err.name === 'NotAllowedError') { flash('Microphone blocked'); return; }
+      try {
+        s = await navigator.mediaDevices.getUserMedia({ audio: true });
+      } catch (err2) {
+        flash('Microphone unavailable');
+        return;
+      }
+    }
+
+    stream = s;
+
+    try {
+      var src = audioCtx.createMediaStreamSource(stream);
+      analyser = audioCtx.createAnalyser();
+      analyser.fftSize = 2048;
+      analyser.smoothingTimeConstant = 0.65;
+      analyser.minDecibels = -95;
+      analyser.maxDecibels = -15;
+      mute = audioCtx.createGain();
+      mute.gain.value = 0;
+      src.connect(analyser);
+      analyser.connect(mute);
+      mute.connect(audioCtx.destination);
+      freqData = new Uint8Array(analyser.frequencyBinCount);
+    } catch (e) {
+      stop();
+      flash('Audio unavailable');
+      return;
+    }
+
+    buildMap();
+    running = true;
+    document.body.classList.add('live');
+    setLabel('Stop');
+  }
+
+  function update() {
+    analyser.getByteFrequencyData(freqData);
+    var sum = 0;
+    for (var i = 0; i < N; i++) {
+      var raw = 0;
+      var b0 = binLo[i], b1 = binHi[i];
+      for (var b = b0; b < b1; b++) {
+        var v = freqData[b];
+        if (v > raw) raw = v;
+      }
+      var n = raw / 255;
+      n = (n - 0.05) * 1.35;
+      if (n <= 0) n = 0;
+      else if (n > 1) n = 1;
+      else n = Math.pow(n, 1.2);
+      sum += n;
+      var c = levels[i];
+      levels[i] = n > c ? c + (n - c) * 0.42 : c + (n - c) * 0.1;
+    }
+    level += (sum / N - level) * 0.22;
+    if (level > 1) level = 1;
+  }
+
+  function decay() {
+    for (var i = 0; i < N; i++) levels[i] += (0 - levels[i]) * 0.1;
+    level += (0 - level) * 0.1;
+  }
+
+  function render(t) {
+    ctx.clearRect(0, 0, W, H);
+
+    var active = running;
+    var R = baseR;
+
+    if (level > 0.01) {
+      var a = Math.min(0.16, level * 0.3);
+      var g = ctx.createRadialGradient(cx, cy, R * 0.9, cx, cy, R * 2.4);
+      g.addColorStop(0, 'rgba(255,255,255,' + a + ')');
+      g.addColorStop(1, 'rgba(255,255,255,0)');
+      ctx.fillStyle = g;
+      ctx.beginPath();
+      ctx.arc(cx, cy, R * 2.4, 0, TAU);
+      ctx.fill();
+    }
+
+    var inner = R + 2;
+    var minLen = baseR * 0.055;
+    var maxLen = baseR * 0.62;
+    var lw = Math.max(1, (TAU * R / N) * 0.55);
+    ctx.lineCap = 'round';
+
+    for (var i = 0; i < N; i++) {
+      var lvl = levels[i];
+      var wobble = active
+        ? Math.sin(t / 260 + i * 1.7) * 0.03
+        : Math.sin(t / 900 + i * 0.9) * 0.012;
+      var L = minLen + lvl * maxLen + minLen * wobble;
+      if (L < 1) L = 1;
+
+      var ang = (i / N) * TAU - Math.PI / 2;
+      var co = Math.cos(ang), si = Math.sin(ang);
+
+      ctx.beginPath();
+      ctx.moveTo(cx + co * inner, cy + si * inner);
+      ctx.lineTo(cx + co * (inner + L), cy + si * (inner + L));
+      ctx.lineWidth = lw * (1 + lvl * 0.9);
+      ctx.strokeStyle = 'rgba(255,255,255,' + (0.22 + lvl * 0.7) + ')';
+      ctx.stroke();
+    }
+
+    ctx.beginPath();
+    ctx.arc(cx, cy, R, 0, TAU);
+    ctx.lineWidth = active ? 1.8 : 1.4;
+    ctx.strokeStyle = 'rgba(255,255,255,' + (active ? 0.75 + level * 0.25 : 0.5) + ')';
+    ctx.stroke();
+  }
+
+  function frame(t) {
+    requestAnimationFrame(frame);
+    if (running && analyser && freqData) update();
+    else decay();
+    render(t);
+  }
+
+  btn.addEventListener('click', function () {
+    if (running) stop();
+    else start();
+  });
+
+  window.addEventListener('resize', resize);
+  window.addEventListener('orientationchange', function () { setTimeout(resize, 120); });
+
+  resize();
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>
