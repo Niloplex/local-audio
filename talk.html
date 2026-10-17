@@ -280,39 +280,39 @@
     var vis = level * gate;
 
     if (vis > 0.01) {
-      var a = Math.min(0.13, vis * 0.26);
-      var grad = ctx.createRadialGradient(cx, cy, R * 0.9, cx, cy, R * 2.3);
+      var a = Math.min(0.16, vis * 0.32);
+      var grad = ctx.createRadialGradient(cx, cy, R * 0.9, cx, cy, R * 2.6);
       grad.addColorStop(0, 'rgba(255,255,255,' + a + ')');
       grad.addColorStop(1, 'rgba(255,255,255,0)');
       ctx.fillStyle = grad;
       ctx.beginPath();
-      ctx.arc(cx, cy, R * 2.3, 0, TAU);
+      ctx.arc(cx, cy, R * 2.6, 0, TAU);
       ctx.fill();
     }
 
     var inner = R + 3;
-    var minLen = baseR * 0.02;
-    var maxLen = baseR * 0.55;
-    var lwBase = Math.max(1.1, ((TAU * R) / N) * 0.5);
+    var minLen = baseR * 0.04;
+    var maxLen = baseR * 1.15;
+    var lwBase = Math.max(1.2, ((TAU * R) / N) * 0.55);
     ctx.lineCap = 'round';
 
     for (var i = 0; i < N; i++) {
       var v = levels[i] * gate;
       if (v < 0.01) continue;
 
-      var alive = 1 + Math.sin(t / 320 + jitter[i]) * 0.14 * (0.4 + v);
+      var alive = 1 + Math.sin(t / 320 + jitter[i]) * 0.16 * (0.4 + v);
       var L = (minLen + v * maxLen) * alive;
-      if (L < 2) L = 2;
+      if (L < 2.5) L = 2.5;
 
       var ang = (i / N) * TAU - Math.PI / 2;
       var co = Math.cos(ang), si = Math.sin(ang);
-      var alpha = 0.2 + v * 0.72;
-      if (alpha > 0.95) alpha = 0.95;
+      var alpha = 0.24 + v * 0.7;
+      if (alpha > 0.96) alpha = 0.96;
 
       ctx.beginPath();
       ctx.moveTo(cx + co * inner, cy + si * inner);
       ctx.lineTo(cx + co * (inner + L), cy + si * (inner + L));
-      ctx.lineWidth = lwBase * (1 + v * 0.85);
+      ctx.lineWidth = lwBase * (1 + v * 0.9);
       ctx.strokeStyle = 'rgba(255,255,255,' + alpha + ')';
       ctx.stroke();
     }
@@ -320,7 +320,7 @@
     ctx.beginPath();
     ctx.arc(cx, cy, R, 0, TAU);
     ctx.lineWidth = 1.6;
-    ctx.strokeStyle = 'rgba(255,255,255,' + (0.42 + vis * 0.42) + ')';
+    ctx.strokeStyle = 'rgba(255,255,255,' + (0.44 + vis * 0.42) + ')';
     ctx.stroke();
   }
 
