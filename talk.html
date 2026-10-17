@@ -200,9 +200,9 @@
       var src = audioCtx.createMediaStreamSource(stream);
       analyser = audioCtx.createAnalyser();
       analyser.fftSize = 2048;
-      analyser.smoothingTimeConstant = 0.55;
-      analyser.minDecibels = -95;
-      analyser.maxDecibels = -15;
+      analyser.smoothingTimeConstant = 0.5;
+      analyser.minDecibels = -100;
+      analyser.maxDecibels = -10;
       mute = audioCtx.createGain();
       mute.gain.value = 0;
       src.connect(analyser);
@@ -239,36 +239,39 @@
       var n0 = raw / 255;
 
       var f = nf[i];
-      if (n0 < f) f += (n0 - f) * 0.25;
-      else f += (n0 - f) * 0.0015;
-      if (f < 0.08) f = 0.08;
-      if (f > 0.9) f = 0.9;
+      if (n0 < f) f += (n0 - f) * 0.22;
+      else f += (n0 - f) * 0.0012;
+      if (f < 0.025) f = 0.025;
+      if (f > 0.85) f = 0.85;
       nf[i] = f;
 
       var n = (n0 - f) / (1 - f);
       if (n <= 0) n = 0;
       else if (n > 1) n = 1;
-      else n = Math.pow(n, 1.15);
+      else n = Math.pow(n, 0.7);
+
+      n *= 1.6;
+      if (n > 1) n = 1;
 
       if (n > peak) peak = n;
       sum += n;
 
       var c = levels[i];
-      levels[i] = n > c ? c + (n - c) * 0.55 : c + (n - c) * 0.16;
+      levels[i] = n > c ? c + (n - c) * 0.6 : c + (n - c) * 0.18;
     }
 
-    var g = peak > 0.12 ? 1 : 0;
-    gate += (g - gate) * (g > gate ? 0.45 : 0.10);
+    var g = peak > 0.04 ? 1 : 0;
+    gate += (g - gate) * (g > gate ? 0.55 : 0.08);
 
     var tgt = sum / N;
-    level += (tgt - level) * 0.25;
+    level += (tgt - level) * 0.28;
     if (level > 1) level = 1;
   }
 
   function decay() {
-    for (var i = 0; i < N; i++) levels[i] += (0 - levels[i]) * 0.12;
-    level += (0 - level) * 0.12;
-    gate += (0 - gate) * 0.15;
+    for (var i = 0; i < N; i++) levels[i] += (0 - levels[i]) * 0.1;
+    level += (0 - level) * 0.1;
+    gate += (0 - gate) * 0.12;
   }
 
   function render() {
@@ -277,46 +280,46 @@
     var R = baseR;
     var vis = level * gate;
 
-    if (vis > 0.012) {
-      var a = Math.min(0.18, vis * 0.34);
-      var grad = ctx.createRadialGradient(cx, cy, R * 0.85, cx, cy, R * 2.5);
+    if (vis > 0.008) {
+      var a = Math.min(0.28, vis * 0.55);
+      var grad = ctx.createRadialGradient(cx, cy, R * 0.8, cx, cy, R * 2.8);
       grad.addColorStop(0, 'rgba(255,255,255,' + a + ')');
       grad.addColorStop(1, 'rgba(255,255,255,0)');
       ctx.fillStyle = grad;
       ctx.beginPath();
-      ctx.arc(cx, cy, R * 2.5, 0, TAU);
+      ctx.arc(cx, cy, R * 2.8, 0, TAU);
       ctx.fill();
     }
 
     var inner = R + 2;
-    var maxLen = baseR * 0.8;
-    var lwBase = Math.max(1, ((TAU * R) / N) * 0.5);
+    var maxLen = baseR * 1.9;
+    var lwBase = Math.max(1.4, ((TAU * R) / N) * 0.62);
     ctx.lineCap = 'round';
 
     for (var i = 0; i < N; i++) {
-      var v = levels[i] * gate;
-      if (v < 0.015) continue;
+      var v = levels[i];
+      if (v < 0.008) continue;
 
       var L = v * maxLen;
-      if (L < 1.5) L = 1.5;
+      if (L < 2) L = 2;
 
       var ang = (i / N) * TAU - Math.PI / 2;
       var co = Math.cos(ang), si = Math.sin(ang);
-      var alpha = 0.18 + v * 0.78;
+      var alpha = 0.3 + v * 0.7;
       if (alpha > 1) alpha = 1;
 
       ctx.beginPath();
       ctx.moveTo(cx + co * inner, cy + si * inner);
       ctx.lineTo(cx + co * (inner + L), cy + si * (inner + L));
-      ctx.lineWidth = lwBase * (1 + v * 1.1);
+      ctx.lineWidth = lwBase * (1 + v * 1.8);
       ctx.strokeStyle = 'rgba(255,255,255,' + alpha + ')';
       ctx.stroke();
     }
 
     ctx.beginPath();
     ctx.arc(cx, cy, R, 0, TAU);
-    ctx.lineWidth = 1.6;
-    ctx.strokeStyle = 'rgba(255,255,255,' + (0.34 + vis * 0.5) + ')';
+    ctx.lineWidth = 1.8;
+    ctx.strokeStyle = 'rgba(255,255,255,' + (0.34 + vis * 0.6) + ')';
     ctx.stroke();
   }
 
